@@ -13,7 +13,7 @@ import telegramService from '../service/telegram-service';
 import aiService from '../service/ai-service';
 import webhookService from '../service/webhook-service';
 
-// 接收邮件，根据附件和 Webhook 配置决定是否入库，再执行各类转发。
+// 接收邮件，无附件邮件仅在 Webhook 推送成功时跳过入库，失败则保存邮件兜底。
 export async function email(message, env, ctx) {
 
 	try {
@@ -143,18 +143,25 @@ export async function email(message, env, ctx) {
 
 		const webhookEnabled = webhookStatus === settingConst.webhookStatus.OPEN && !!webhookUrl;
 		const matchesForwardRule = ruleType !== settingConst.ruleType.RULE || ruleEmail.split(',').includes(message.to);
-		const skipStorage = attachments.length === 0 && webhookEnabled && matchesForwardRule;
+		const preferWebhook = attachments.length === 0 && webhookEnabled && matchesForwardRule;
+		let webhookDelivered = false;
 		let emailRow;
 
-		if (skipStorage) {
-			// 无附件且可推送的邮件直接使用解析结果，不生成数据库 ID。
+		if (preferWebhook) {
+			// 先确认无附件邮件已推送成功，再决定是否跳过入库。
 			emailRow = {
 				...params,
 				emailId: null,
 				content: params.content || '',
 				createTime: new Date().toISOString().slice(0, 19).replace('T', ' ')
 			};
-		} else {
+			webhookDelivered = await webhookService.sendEmail({ env }, emailRow, webhookUrl, webhookRetry, webhookSecret);
+			if (webhookDelivered) {
+				console.info('Webhook 推送成功，邮件未入库');
+			}
+		}
+
+		if (!webhookDelivered) {
 			emailRow = await emailService.receive({ env }, params, cidAttachments, r2Domain);
 
 			attachments.forEach(attachment => {
@@ -172,6 +179,9 @@ export async function email(message, env, ctx) {
 			}
 
 			emailRow = await emailService.completeReceive({ env }, account ? emailConst.status.RECEIVE : emailConst.status.NOONE, emailRow.emailId);
+			if (preferWebhook) {
+				console.warn(`Webhook 推送失败，邮件已回退入库 emailId: ${emailRow.emailId}`);
+			}
 		}
 
 		if (!matchesForwardRule) {
@@ -180,7 +190,11 @@ export async function email(message, env, ctx) {
 
 		//转发到TG
 		if (tgBotStatus === settingConst.tgBotStatus.OPEN && tgChatId) {
-			await telegramService.sendEmailToBot({ env }, emailRow)
+			try {
+				await telegramService.sendEmailToBot({ env }, emailRow)
+			} catch (e) {
+				console.error('转发 Telegram 异常: ', e);
+			}
 		}
 
 		//转发到其他邮箱
@@ -201,12 +215,12 @@ export async function email(message, env, ctx) {
 		}
 
 		//转发到 Webhook
-		if (webhookEnabled) {
+		if (webhookEnabled && !preferWebhook) {
 			await webhookService.sendEmail({ env }, emailRow, webhookUrl, webhookRetry, webhookSecret);
 		}
 
 	} catch (e) {
-		console.error('邮件接收异常: ', e);
+		console.error(`邮件接收异常: ${e.message}`, e.stack);
 		throw e
 	}
 }

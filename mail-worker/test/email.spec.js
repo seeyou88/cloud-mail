@@ -6,6 +6,7 @@ import settingService from '../src/service/setting-service';
 import attService from '../src/service/att-service';
 import userService from '../src/service/user-service';
 import aiService from '../src/service/ai-service';
+import telegramService from '../src/service/telegram-service';
 import jwtUtils from '../src/utils/jwt-utils';
 import { settingConst } from '../src/const/entity-const';
 
@@ -23,8 +24,8 @@ let settings;
 let storedEmail;
 let fetchMock;
 
-// 构造真实 MIME 邮件，覆盖普通附件和正文内嵌图片。
-function createMessage(disposition) {
+// 构造真实 MIME 邮件，覆盖不同正文类型、普通附件和正文内嵌图片。
+function createMessage(disposition, bodyText = 'Your code is 123456', contentType = 'text/plain') {
 	const headers = [
 		'From: Sender <sender@example.net>',
 		'To: Admin <admin@example.com>',
@@ -35,9 +36,9 @@ function createMessage(disposition) {
 		'Content-Type: multipart/mixed; boundary="test-boundary"',
 		'',
 		'--test-boundary',
-		'Content-Type: text/plain; charset=utf-8',
+		`Content-Type: ${contentType}; charset=utf-8`,
 		'',
-		'Your code is 123456',
+		bodyText,
 		'--test-boundary',
 		'Content-Type: image/png; name="pixel.png"',
 		`Content-Disposition: ${disposition}; filename="pixel.png"`,
@@ -46,7 +47,7 @@ function createMessage(disposition) {
 		'',
 		'aGVsbG8=',
 		'--test-boundary--'
-	] : ['Content-Type: text/plain; charset=utf-8', '', 'Your code is 123456'];
+	] : [`Content-Type: ${contentType}; charset=utf-8`, '', bodyText];
 	return {
 		to: 'admin@example.com',
 		raw: new Blob([[...headers, ...body].join('\r\n')]).stream(),
@@ -125,6 +126,35 @@ describe('邮件入库与 Webhook 推送', () => {
 		});
 	});
 
+	// 复现接收端要求 text 为字符串时对纯 HTML 邮件的校验。
+	it.each([undefined, 'attachment'])('纯 HTML 邮件推送时从正文补齐 text（附件：%s）', async (disposition) => {
+		const html = '<html><body><style>.hidden{display:none}</style><p>Your code is <b>123456</b></p></body></html>';
+		// 模拟线上接收端：缺少 text 字符串时返回相同的 HTTP 400。
+		fetchMock.mockImplementation(async (url, request) => {
+			const payload = JSON.parse(request.body);
+			return typeof payload.text === 'string'
+				? new Response('ok')
+				: new Response('{"code":-1,"msg":"text必须是字符串"}', { status: 400 });
+		});
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		await email(createMessage(disposition, html, 'text/html'), env, {});
+		expect(aiService.extractCode.mock.calls[0][1].text).toBeUndefined();
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
+		expect(payload.text).toBe('Your code is 123456');
+		expect(payload.content).toBe(aiService.extractCode.mock.calls[0][1].html);
+		if (!disposition) expectNoStorage();
+	});
+
+	// 没有可提取正文时也发送空字符串，避免 JSON 省略 text 字段。
+	it('空正文邮件的 Webhook text 仍为字符串', async () => {
+		await email(createMessage(undefined, ''), env, {});
+		const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
+		expect(payload.text).toBe('');
+		expectNoStorage();
+	});
+
 	// Webhook 不可用时继续保留本地邮件。
 	it.each([
 		['关闭 Webhook', { webhookStatus: settingConst.webhookStatus.CLOSE }],
@@ -178,7 +208,8 @@ describe('邮件入库与 Webhook 推送', () => {
 		await email(message, env, {});
 		expect(message.forward).toHaveBeenCalledWith('archive@example.net');
 		expect(fetchMock).toHaveBeenCalledTimes(2);
-		const telegramBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+		const telegramRequest = fetchMock.mock.calls.find(([url]) => url.startsWith('https://api.telegram.org/'));
+		const telegramBody = JSON.parse(telegramRequest[1].body);
 		const buttons = telegramBody.reply_markup.inline_keyboard.flat();
 		expect(buttons.some(button => button.text === 'View')).toBe(!!disposition);
 		expect(buttons).toContainEqual({ text: '123456', copy_text: { text: '123456' } });
@@ -188,13 +219,33 @@ describe('邮件入库与 Webhook 推送', () => {
 		}
 	});
 
-	// 推送失败只执行既有重试，不回退写入数据库。
-	it('无附件邮件推送失败仍不入库，并执行配置的重试次数', async () => {
-		fetchMock.mockImplementation(async () => new Response('unavailable', { status: 503 }));
+	// HTTP 拒绝和网络异常都必须保留邮件，不能静默丢弃。
+	it.each(['http', 'network', 'invalid-id'])('无附件邮件遇到 %s 推送失败时重试并回退入库', async (failure) => {
+		// 模拟网络中断、服务端错误和接收端拒绝空邮件 ID。
+		fetchMock.mockImplementation(async () => {
+			if (failure === 'network') throw new Error('connection reset');
+			return new Response(failure === 'invalid-id' ? 'emailId must be a number' : 'unavailable', {
+				status: failure === 'invalid-id' ? 400 : 503
+			});
+		});
 		const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const warningLog = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		await email(createMessage(), env, {});
-		expectNoStorage();
+		expect(emailService.receive).toHaveBeenCalledTimes(1);
+		expect(emailService.completeReceive).toHaveBeenCalledWith({ env }, 0, 42);
 		expect(fetchMock).toHaveBeenCalledTimes(3);
 		expect(errorLog).toHaveBeenCalledWith(expect.stringContaining('Webhook 推送失败'));
+		expect(warningLog).toHaveBeenCalledWith(expect.stringContaining('邮件已回退入库'));
+	});
+
+	// 其他转发异常不能阻止无附件邮件先送达 Webhook。
+	it('Telegram 异常不阻断 Webhook 推送', async () => {
+		Object.assign(settings, { tgBotStatus: settingConst.tgBotStatus.OPEN, tgChatId: '123' });
+		vi.spyOn(telegramService, 'sendEmailToBot').mockRejectedValue(new Error('Telegram unavailable'));
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		await expect(email(createMessage(), env, {})).resolves.toBeUndefined();
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock.mock.calls[0][0]).toBe(settings.webhookUrl);
+		expectNoStorage();
 	});
 });

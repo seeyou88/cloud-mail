@@ -1,13 +1,15 @@
 import domainUtils from '../utils/domain-uitls';
+import emailUtils from '../utils/email-utils';
 
 const webhookService = {
 
+	// 补齐纯文本正文后推送邮件并返回 HTTP 是否成功，失败时按配置重试。
 	async sendEmail(c, emailRow, webhookUrl, retry = 0, webhookSecret) {
 
 		webhookUrl = domainUtils.toOssDomain(webhookUrl);
 
 		if (!webhookUrl) {
-			return;
+			return false;
 		}
 
 		retry = Number(retry);
@@ -30,8 +32,8 @@ const webhookService = {
 			toEmail: emailRow.toEmail,
 			toName: emailRow.toName,
 			subject: emailRow.subject,
-			text: emailRow.text,
-			content: emailRow.content,
+			text: emailRow.text || emailUtils.htmlToText(emailRow.content),
+			content: emailRow.content || '',
 			code: emailRow.code,
 			createTime: emailRow.createTime
 		});
@@ -47,7 +49,7 @@ const webhookService = {
 				});
 
 				if (res.ok) {
-					return;
+					return true;
 				}
 
 				lastError = `status: ${res.status} response: ${await res.text()}`;
@@ -57,6 +59,7 @@ const webhookService = {
 		}
 
 		console.error(`Webhook 推送失败: ${lastError}`);
+		return false;
 	}
 
 };
