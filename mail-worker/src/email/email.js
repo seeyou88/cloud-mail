@@ -13,6 +13,7 @@ import telegramService from '../service/telegram-service';
 import aiService from '../service/ai-service';
 import webhookService from '../service/webhook-service';
 
+// 接收邮件，根据附件和 Webhook 配置决定是否入库，再执行各类转发。
 export async function email(message, env, ctx) {
 
 	try {
@@ -140,33 +141,41 @@ export async function email(message, env, ctx) {
 			}
 		}
 
-		let emailRow = await emailService.receive({ env }, params, cidAttachments, r2Domain);
+		const webhookEnabled = webhookStatus === settingConst.webhookStatus.OPEN && !!webhookUrl;
+		const matchesForwardRule = ruleType !== settingConst.ruleType.RULE || ruleEmail.split(',').includes(message.to);
+		const skipStorage = attachments.length === 0 && webhookEnabled && matchesForwardRule;
+		let emailRow;
 
-		attachments.forEach(attachment => {
-			attachment.emailId = emailRow.emailId;
-			attachment.userId = emailRow.userId;
-			attachment.accountId = emailRow.accountId;
-		});
+		if (skipStorage) {
+			// 无附件且可推送的邮件直接使用解析结果，不生成数据库 ID。
+			emailRow = {
+				...params,
+				emailId: null,
+				content: params.content || '',
+				createTime: new Date().toISOString().slice(0, 19).replace('T', ' ')
+			};
+		} else {
+			emailRow = await emailService.receive({ env }, params, cidAttachments, r2Domain);
 
-		try {
-			if (attachments.length > 0) {
-				await attService.addAtt({ env }, attachments);
+			attachments.forEach(attachment => {
+				attachment.emailId = emailRow.emailId;
+				attachment.userId = emailRow.userId;
+				attachment.accountId = emailRow.accountId;
+			});
+
+			try {
+				if (attachments.length > 0) {
+					await attService.addAtt({ env }, attachments);
+				}
+			} catch (e) {
+				console.error(e);
 			}
-		} catch (e) {
-			console.error(e);
+
+			emailRow = await emailService.completeReceive({ env }, account ? emailConst.status.RECEIVE : emailConst.status.NOONE, emailRow.emailId);
 		}
 
-		emailRow = await emailService.completeReceive({ env }, account ? emailConst.status.RECEIVE : emailConst.status.NOONE, emailRow.emailId);
-
-
-		if (ruleType === settingConst.ruleType.RULE) {
-
-			const emails = ruleEmail.split(',');
-
-			if (!emails.includes(message.to)) {
-				return;
-			}
-
+		if (!matchesForwardRule) {
+			return;
 		}
 
 		//转发到TG
@@ -192,7 +201,7 @@ export async function email(message, env, ctx) {
 		}
 
 		//转发到 Webhook
-		if (webhookStatus === settingConst.webhookStatus.OPEN && webhookUrl) {
+		if (webhookEnabled) {
 			await webhookService.sendEmail({ env }, emailRow, webhookUrl, webhookRetry, webhookSecret);
 		}
 

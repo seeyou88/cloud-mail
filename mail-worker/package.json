@@ -5,6 +5,7 @@
 	"scripts": {
 		"dev": "wrangler dev --config wrangler-dev.toml",
 		"test": "wrangler deploy --config wrangler-test.toml",
+		"test:email": "vitest run --config vitest.email.config.js",
 		"deploy": "wrangler deploy",
 		"start": "wrangler dev"
 	},

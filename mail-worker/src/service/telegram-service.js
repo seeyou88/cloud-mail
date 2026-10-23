@@ -43,23 +43,24 @@ const telegramService = {
 
 	},
 
+	// 推送邮件内容；只有已入库的邮件才生成查看原文的链接。
 	async sendEmailToBot(c, email) {
 
 		const { tgBotToken, tgChatId, customDomain, tgMsgTo, tgMsgFrom, tgMsgText } = await settingService.query(c);
 
 		const tgChatIds = tgChatId.split(',');
 
-		const jwtToken = await jwtUtils.generateToken(c, { emailId: email.emailId })
-
-		const webAppUrl = customDomain ? `${domainUtils.toOssDomain(customDomain)}/api/telegram/getEmail/${jwtToken}` : 'https://www.cloudflare.com/404'
-		const inlineKeyboard = [
-			[
+		const inlineKeyboard = [];
+		if (email.emailId) {
+			const jwtToken = await jwtUtils.generateToken(c, { emailId: email.emailId })
+			const webAppUrl = customDomain ? `${domainUtils.toOssDomain(customDomain)}/api/telegram/getEmail/${jwtToken}` : 'https://www.cloudflare.com/404'
+			inlineKeyboard.push([
 				{
 					text: 'View',
 					web_app: { url: webAppUrl }
 				}
-			]
-		];
+			]);
+		}
 
 		if (email.code) {
 			inlineKeyboard.push([
