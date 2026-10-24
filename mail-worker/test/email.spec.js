@@ -8,6 +8,7 @@ import userService from '../src/service/user-service';
 import aiService from '../src/service/ai-service';
 import telegramService from '../src/service/telegram-service';
 import jwtUtils from '../src/utils/jwt-utils';
+import emailUtils from '../src/utils/email-utils';
 import { settingConst } from '../src/const/entity-const';
 
 // 隔离数据库服务；邮件解析、Webhook 请求和 Telegram 请求使用真实实现。
@@ -126,9 +127,10 @@ describe('邮件入库与 Webhook 推送', () => {
 		});
 	});
 
-	// 复现接收端要求 text 为字符串时对纯 HTML 邮件的校验。
-	it.each([undefined, 'attachment'])('纯 HTML 邮件推送时从正文补齐 text（附件：%s）', async (disposition) => {
+	// 纯HTML邮件仍满足接收端字符串校验，同时避免在推送前构建DOM。
+	it.each([undefined, 'attachment'])('纯 HTML 邮件保留完整正文并使用空 text，不进行DOM解析（附件：%s）', async (disposition) => {
 		const html = '<html><body><style>.hidden{display:none}</style><p>Your code is <b>123456</b></p></body></html>';
+		const htmlToText = vi.spyOn(emailUtils, 'htmlToText');
 		// 模拟线上接收端：缺少 text 字符串时返回相同的 HTTP 400。
 		fetchMock.mockImplementation(async (url, request) => {
 			const payload = JSON.parse(request.body);
@@ -142,9 +144,31 @@ describe('邮件入库与 Webhook 推送', () => {
 		expect(aiService.extractCode.mock.calls[0][1].text).toBeUndefined();
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 		const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
-		expect(payload.text).toBe('Your code is 123456');
+		expect(payload.text).toBe('');
 		expect(payload.content).toBe(aiService.extractCode.mock.calls[0][1].html);
+		expect(htmlToText).not.toHaveBeenCalled();
 		if (!disposition) expectNoStorage();
+	});
+
+	// 模拟UTF-8字符恰好在两个网络分块之间，验证原始字节直接交给MIME解析器后不乱码。
+	it('中文正文跨流分块时仍保持完整，不出现替换字符', async () => {
+		const message = createMessage(undefined, '春秋航空：您好，验证码为123456');
+		const raw = new Uint8Array(await new Response(message.raw).arrayBuffer());
+		const split = raw.indexOf(0xe6) + 1;
+		expect(split).toBeGreaterThan(0);
+		message.raw = new ReadableStream({
+			// 将一个中文字符的UTF-8字节拆开，复现原分块TextDecoder造成的损坏。
+			start(controller) {
+				controller.enqueue(raw.slice(0, split));
+				controller.enqueue(raw.slice(split));
+				controller.close();
+			}
+		});
+		await email(message, env, {});
+		const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
+		expect(payload.text).toContain('春秋航空：您好，验证码为123456');
+		expect(payload.text).not.toContain('\uFFFD');
+		expectNoStorage();
 	});
 
 	// 没有可提取正文时也发送空字符串，避免 JSON 省略 text 字段。

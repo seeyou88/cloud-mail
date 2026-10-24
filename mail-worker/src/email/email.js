@@ -13,7 +13,7 @@ import telegramService from '../service/telegram-service';
 import aiService from '../service/ai-service';
 import webhookService from '../service/webhook-service';
 
-// 接收邮件，无附件邮件仅在 Webhook 推送成功时跳过入库，失败则保存邮件兜底。
+// 直接解析MIME字节流，避免重复转码及分块截断中文；无附件邮件仅在Webhook成功时跳过入库。
 export async function email(message, env, ctx) {
 
 	try {
@@ -44,16 +44,7 @@ export async function email(message, env, ctx) {
 			return;
 		}
 
-		const reader = message.raw.getReader();
-		let content = '';
-
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			content += new TextDecoder().decode(value);
-		}
-
-		const email = await PostalMime.parse(content);
+		const email = await PostalMime.parse(message.raw);
 
 
 		const blockFlag = checkBlock(blackSubject, blackContent, blackFrom, email);

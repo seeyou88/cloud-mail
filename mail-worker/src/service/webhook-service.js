@@ -1,9 +1,8 @@
 import domainUtils from '../utils/domain-uitls';
-import emailUtils from '../utils/email-utils';
 
 const webhookService = {
 
-	// 补齐纯文本正文后推送邮件并返回 HTTP 是否成功，失败时按配置重试。
+	// 原样推送MIME纯文本及完整HTML；纯HTML邮件text为空，避免在Worker构建DOM，失败按配置重试。
 	async sendEmail(c, emailRow, webhookUrl, retry = 0, webhookSecret) {
 
 		webhookUrl = domainUtils.toOssDomain(webhookUrl);
@@ -32,7 +31,7 @@ const webhookService = {
 			toEmail: emailRow.toEmail,
 			toName: emailRow.toName,
 			subject: emailRow.subject,
-			text: emailRow.text || emailUtils.htmlToText(emailRow.content),
+			text: emailRow.text || '',
 			content: emailRow.content || '',
 			code: emailRow.code,
 			createTime: emailRow.createTime
