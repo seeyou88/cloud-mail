@@ -89,6 +89,10 @@ const premKey = {
 	'reg-key:delete': ['/regKey/delete','/regKey/clearNotUse'],
 };
 
+// 当前实例遇到当日 KV 写额度耗尽后，暂缓非必要的会话续期至下个 UTC 日。
+let authRefreshRetryAfter = 0;
+
+// 校验登录和权限；每日续期遇到 KV 写额度耗尽时保留已验证会话的正常访问。
 app.use('*', async (c, next) => {
 
 	const path = c.req.path;
@@ -154,10 +158,19 @@ app.use('*', async (c, next) => {
 	const refreshTime = dayjs(authInfo.refreshTime).startOf('day');
 	const nowTime = dayjs().startOf('day')
 
-	if (!nowTime.isSame(refreshTime)) {
-		authInfo.refreshTime = dayjs().toISOString();
-		await userService.updateUserInfo(c, authInfo.user.userId);
-		await c.env.kv.put(KvConst.AUTH_INFO + userId, JSON.stringify(authInfo), { expirationTtl: constant.TOKEN_EXPIRE });
+	if (!nowTime.isSame(refreshTime) && Date.now() >= authRefreshRetryAfter) {
+		try {
+			authInfo.refreshTime = dayjs().toISOString();
+			await userService.updateUserInfo(c, authInfo.user.userId);
+			await c.env.kv.put(KvConst.AUTH_INFO + userId, JSON.stringify(authInfo), { expirationTtl: constant.TOKEN_EXPIRE });
+		} catch (e) {
+			if (!e.message.includes('KV put() limit exceeded for the day')) {
+				throw e;
+			}
+			const now = new Date();
+			authRefreshRetryAfter = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+			console.warn('KV 当日写入额度已耗尽，已验证会话继续访问，每日续期暂缓至 UTC 00:00');
+		}
 	}
 
 	c.set('user',authInfo.user)
