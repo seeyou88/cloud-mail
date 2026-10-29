@@ -1,7 +1,7 @@
 import orm from '../entity/orm';
 import email from '../entity/email';
 import { emailListColumns, emailBriefColumns, EMAIL_LIST_TEXT_LEN } from '../lib/email-list-columns';
-import { attConst, emailConst, isDel, settingConst } from '../const/entity-const';
+import { emailConst, isDel, settingConst } from '../const/entity-const';
 import { and, desc, eq, gt, inArray, notInArray, lt, count, asc, sql, ne, or, like, lte, gte } from 'drizzle-orm';
 import { star } from '../entity/star';
 import settingService from './setting-service';
@@ -11,7 +11,6 @@ import emailUtils from '../utils/email-utils';
 import fileUtils from '../utils/file-utils';
 import { Resend } from 'resend';
 import attService from './att-service';
-import { parseHTML } from 'linkedom';
 import userService from './user-service';
 import roleService from './role-service';
 import user from '../entity/user';
@@ -19,7 +18,6 @@ import starService from './star-service';
 import dayjs from 'dayjs';
 import kvConst from '../const/kv-const';
 import { t } from '../i18n/i18n'
-import domainUtils from '../utils/domain-uitls';
 import account from "../entity/account";
 import { att } from '../entity/att';
 import telegramService from './telegram-service';
@@ -774,47 +772,9 @@ const emailService = {
 
 	},
 
-	imgReplace(content, cidAttList, r2domain) {
-
-		if (!content) {
-			return ''
-		}
-
-		const { document } = parseHTML(content);
-
-		const images = Array.from(document.querySelectorAll('img'));
-
-		const useAtts = []
-
-		for (const img of images) {
-
-			const src = img.getAttribute('src');
-			if (src && src.startsWith('cid:') && cidAttList) {
-
-				const cid = src.replace(/^cid:/, '');
-				const attCidIndex = cidAttList.findIndex(cidAtt => cidAtt.contentId.replace(/^<|>$/g, '') === cid);
-
-				if (attCidIndex > -1) {
-					const cidAtt = cidAttList[attCidIndex];
-					img.setAttribute('src', '{{domain}}' + cidAtt.key);
-					useAtts.push(cidAtt)
-				}
-
-			}
-
-			r2domain = domainUtils.toOssDomain(r2domain)
-
-			if (src && src.startsWith(r2domain + '/')) {
-				img.setAttribute('src', src.replace(r2domain + '/', '{{domain}}'));
-			}
-
-		}
-
-		useAtts.forEach(att => {
-			att.type = attConst.type.EMBED
-		})
-
-		return document.toString();
+	// 保留原始正文，不解析 HTML，不替换外链、CID 或存储域名图片，也不修改附件类型。
+	imgReplace(content) {
+		return content || '';
 	},
 
 	selectById(c, emailId) {

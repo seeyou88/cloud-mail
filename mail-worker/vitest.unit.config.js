@@ -4,6 +4,6 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
 	test: {
 		environment: 'node',
-		include: ['test/email.spec.js', 'test/security.spec.js']
+		include: ['test/email.spec.js', 'test/security.spec.js', 'test/email-content.spec.js']
 	}
 });
