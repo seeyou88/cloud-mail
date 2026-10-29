@@ -15,9 +15,10 @@ database_id = "d97ec184-8ef0-4689-9be5-6e12280953a1"
 binding = "kv"
 id = "cd920cc179004de3bdd7c953812f016b"
 
-#[[r2_buckets]]
-#binding = "r2"			#r2对象存储绑定名默认不可修改
-#bucket_name = ""		#r2对象存储桶的名字
+# 保留线上已有 R2 绑定，继续使用 mail 存储桶。
+[[r2_buckets]]
+binding = "r2"
+bucket_name = "mail"
 
 #[[send_email]]
 #name = "email"			#CF发件, 配置后优先使用
