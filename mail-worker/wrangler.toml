@@ -46,3 +46,7 @@ crons = ["0 * * * *"]	#每小时执行；resetDaySendCount 仅在 UTC 0 点生�
 
 [build]
 command = "pnpm --prefix ../mail-vue install && pnpm --prefix ../mail-vue run build"
+
+[limits]
+# 每次调用最多使用 60 秒 CPU 时间，单位为毫秒。
+cpu_ms = 60000
