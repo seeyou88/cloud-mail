@@ -106,24 +106,18 @@ afterEach(() => {
 
 // 验证无附件直推、保留入库的边界条件，以及其他转发行为。
 describe('邮件入库与 Webhook 推送', () => {
-	// 记录邮件头、HTML 和附件的原始字节，并验证正常解析、保存附件和推送继续执行。
-	it('Booking 邮件在解析前完整记录 Base64 原文，附件字节保持完整', async () => {
+	// 诊断关闭后直接解析原始流，大正文、中文和附件仍可完成入库和推送。
+	it('Booking 原文日志停用后直接解析流，跳过额外 Base64 编码', async () => {
 		const html = `<html><body>预订确认${'x'.repeat(70000)}<img src="cid:pixel"></body></html>`;
 		const message = createMessage('inline', html, 'text/html');
 		message.from = 'noreply@mailer.booking.com';
-		const raw = new Uint8Array(await new Response(message.raw).arrayBuffer());
-		message.raw = new Blob([raw]).stream();
 		const infoLog = vi.spyOn(console, 'info').mockImplementation(() => {});
+		const base64Encode = vi.spyOn(globalThis, 'btoa');
 		const parse = vi.spyOn(PostalMime, 'parse');
 		await email(message, env, {});
-		const record = infoLog.mock.calls[0][0];
-		expect(record).toMatchObject({
-			message: 'Booking 邮件原文', mailFrom: message.from, rcptTo: message.to,
-			rawSize: raw.byteLength, encoding: 'base64'
-		});
-		expect(new Uint8Array(Buffer.from(record.rawEmail, 'base64'))).toEqual(raw);
-		expect(new Uint8Array(parse.mock.calls[0][0])).toEqual(raw);
-		expect(infoLog.mock.invocationCallOrder[0]).toBeLessThan(parse.mock.invocationCallOrder[0]);
+		expect(parse).toHaveBeenCalledWith(message.raw);
+		expect(base64Encode).not.toHaveBeenCalled();
+		expect(infoLog).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'Booking 邮件原文' }));
 		expect(attService.addAtt).toHaveBeenCalledWith({ env }, [expect.objectContaining({
 			filename: 'pixel.png', content: new TextEncoder().encode('hello').buffer
 		})]);
@@ -132,17 +126,15 @@ describe('邮件入库与 Webhook 推送', () => {
 		expect(payload.content).toContain('cid:pixel');
 	});
 
-	// MIME 解析抛错时，原文仍应已写入日志，便于调查解析阶段异常。
-	it('Booking 邮件解析失败前已经记录原文', async () => {
+	// 关闭诊断后，即使解析失败也不输出原文，仍保留收件异常。
+	it('Booking 邮件解析失败时也不再记录原文', async () => {
 		const message = createMessage();
 		message.from = 'noreply@mailer.booking.com';
-		const raw = await new Response(message.raw).text();
-		message.raw = new Blob([raw]).stream();
 		const infoLog = vi.spyOn(console, 'info').mockImplementation(() => {});
 		vi.spyOn(console, 'error').mockImplementation(() => {});
 		vi.spyOn(PostalMime, 'parse').mockRejectedValueOnce(new Error('MIME parse failed'));
 		await expect(email(message, env, {})).rejects.toThrow('MIME parse failed');
-		expect(Buffer.from(infoLog.mock.calls[0][0].rawEmail, 'base64').toString('utf8')).toBe(raw);
+		expect(infoLog).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'Booking 邮件原文' }));
 		expectNoStorage();
 		expect(fetchMock).not.toHaveBeenCalled();
 	});

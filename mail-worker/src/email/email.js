@@ -13,13 +13,16 @@ import telegramService from '../service/telegram-service';
 import aiService from '../service/ai-service';
 import webhookService from '../service/webhook-service';
 
-// 解析前记录指定 Booking 发件人的原始邮件；无附件邮件仅在 Webhook 成功时跳过入库。
+// 暂停原文诊断日志，同时跳过额外的读取和 Base64 编码，减轻收件 CPU 开销。
+const bookingRawEmailLogEnabled = false;
+
+// 按诊断开关记录指定发件人的原文；无附件邮件仅在 Webhook 成功时跳过入库。
 export async function email(message, env, ctx) {
 
 	try {
 
 		let rawEmail = message.raw;
-		if (message.from.toLowerCase() === 'noreply@mailer.booking.com') {
+		if (bookingRawEmailLogEnabled && message.from.toLowerCase() === 'noreply@mailer.booking.com') {
 			const rawBuffer = await new Response(rawEmail).arrayBuffer();
 			const rawBytes = new Uint8Array(rawBuffer);
 			let binary = '';
