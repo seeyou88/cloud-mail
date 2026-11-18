@@ -13,10 +13,31 @@ import telegramService from '../service/telegram-service';
 import aiService from '../service/ai-service';
 import webhookService from '../service/webhook-service';
 
-// 直接解析MIME字节流，避免重复转码及分块截断中文；无附件邮件仅在Webhook成功时跳过入库。
+// 解析前记录指定 Booking 发件人的原始邮件；无附件邮件仅在 Webhook 成功时跳过入库。
 export async function email(message, env, ctx) {
 
 	try {
+
+		let rawEmail = message.raw;
+		if (message.from.toLowerCase() === 'noreply@mailer.booking.com') {
+			const rawBuffer = await new Response(rawEmail).arrayBuffer();
+			const rawBytes = new Uint8Array(rawBuffer);
+			let binary = '';
+			// 分块转换字节，避免大邮件使用展开参数时超出调用栈限制。
+			for (let offset = 0; offset < rawBytes.length; offset += 8192) {
+				binary += String.fromCharCode(...rawBytes.subarray(offset, offset + 8192));
+			}
+			console.info({
+				message: 'Booking 邮件原文',
+				mailFrom: message.from,
+				rcptTo: message.to,
+				rawSize: rawBytes.byteLength,
+				encoding: 'base64',
+				rawEmail: btoa(binary)
+			});
+			// MIME 解析复用原始字节，避免重复读取已经消费的邮件流。
+			rawEmail = rawBuffer;
+		}
 
 		const {
 			receive,
@@ -44,7 +65,7 @@ export async function email(message, env, ctx) {
 			return;
 		}
 
-		const email = await PostalMime.parse(message.raw);
+		const email = await PostalMime.parse(rawEmail);
 
 
 		const blockFlag = checkBlock(blackSubject, blackContent, blackFrom, email);
